@@ -1,0 +1,8 @@
+{
+  "name": "GeoRiddle",
+  "integrations": {
+    "capacitor": {}
+  },
+  "type": "angular",
+  "id": "2c2faa81"
+}
