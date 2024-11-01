@@ -1,13 +1,27 @@
 import { Component, ElementRef, ViewChild, AfterViewInit, OnDestroy } from '@angular/core';
 import { GoogleMap } from '@capacitor/google-maps';
+import { AlertController } from '@ionic/angular';
+import { HttpClient } from '@angular/common/http';
+
+interface Point {
+  latitude: number;
+  longitude: number;
+  question: Question;
+  markerId?: string;
+}
+
+interface Question {
+  text: string;
+  answers: string[];
+  correctIndex: number;
+}
 
 @Component({
   selector: 'app-map',
   template: `
     <capacitor-google-map #mapContainer></capacitor-google-map>
-    <div class="button-container">
-      <ion-button (click)="loadWaypoint()">Load Waypoint</ion-button>
-      <ion-button (click)="clearWaypoints()">Clear Waypoints</ion-button>
+    <div class="button-container" *ngIf="!gameStarted">
+      <ion-button (click)="startGame()">Start Game</ion-button>
     </div>
   `,
   styles: [`
@@ -36,35 +50,29 @@ export class MapComponent implements AfterViewInit, OnDestroy {
   @ViewChild('mapContainer', { static: false }) mapRef!: ElementRef<HTMLElement>;
   map!: GoogleMap;
   userMarkerId!: string | null;
-  watchId!: number;
-  waypoints: any[] = []; // Array to store waypoints
-  lastWaypoint: { lat: number; lng: number } | null = null; // Store the last added waypoint or user location
-  polylines: string[] = []; // Store polyline IDs to clear them later
+  waypoints: Point[] = [];
+  gameStarted = false;
+  waypointCount = 5;
+  incorrectAttempts = 0;
+  questionActive = false;
+
+  constructor(
+    private alertController: AlertController,
+    private http: HttpClient
+  ) {}
 
   ngAfterViewInit() {
     this.createMap();
   }
 
   ngOnDestroy() {
-    if (this.watchId) {
-      navigator.geolocation.clearWatch(this.watchId);
+    if (this.userMarkerId) {
+      this.map.removeMarker(this.userMarkerId);
     }
   }
 
-  // Utility function to generate random coordinates within a radius
-  getRandomLocation(lat: number, lng: number, radius: number) {
-    const r = radius / 111300; // Convert meters to degrees
-    const u = Math.random();
-    const v = Math.random();
-    const w = r * Math.sqrt(u);
-    const t = 2 * Math.PI * v;
-    const newLat = lat + w * Math.cos(t);
-    const newLng = lng + w * Math.sin(t);
-    return { lat: newLat, lng: newLng };
-  }
-
   async createMap() {
-    const apiKey = 'YOUR_GOOGLE_MAPS_API_KEY';
+    const apiKey = 'YOUR_API_KEY_HERE';
 
     this.map = await GoogleMap.create({
       id: 'my-map',
@@ -73,83 +81,196 @@ export class MapComponent implements AfterViewInit, OnDestroy {
       config: {
         center: { lat: 0, lng: 0 },
         zoom: 15,
-        styles: [
-          // Custom styles (optional)
-        ]
       },
     });
-
-    // Watch the user's location in real-time
-    this.watchId = navigator.geolocation.watchPosition(async (position) => {
-      const userLat = position.coords.latitude;
-      const userLng = position.coords.longitude;
-
-      if (this.userMarkerId) {
-        await this.map.removeMarker(this.userMarkerId);
-      }
-
-      // Add a new marker for the user's location
-      this.userMarkerId = await this.map.addMarker({
-        coordinate: { lat: userLat, lng: userLng },
-        title: 'Your Location',
-        iconUrl: 'https://maps.google.com/mapfiles/kml/shapes/man.png' // Optional: Add custom icon for the user
-      });
-
-      // Update the last known location to the user's position if no waypoints are present
-      if (!this.lastWaypoint) {
-        this.lastWaypoint = { lat: userLat, lng: userLng };
-      }
-
-      // Optionally, keep the camera centered on the user's location
-      await this.map.setCamera({
-        coordinate: { lat: userLat, lng: userLng },
-        zoom: 15,
-      });
-    }, (error) => {
-      console.error('Error watching location', error);
-    });
   }
 
-  async loadWaypoint() {
-    if (!this.lastWaypoint) return;
-
-    // Generate a new random waypoint within 1km of the last waypoint or user location
-    const newWaypoint = this.getRandomLocation(this.lastWaypoint.lat, this.lastWaypoint.lng, 1000);
-
-    // Add the waypoint marker to the map
-    await this.map.addMarker({
-      coordinate: { lat: newWaypoint.lat, lng: newWaypoint.lng },
-      title: 'Waypoint',
-    });
-
-    // Add the waypoint to the waypoints list
-    this.waypoints.push(newWaypoint);
-
-    // Draw a polyline connecting the last waypoint/user location to the new waypoint
-    const polylineIds = await this.map.addPolylines([{
-      path: [
-        { lat: this.lastWaypoint.lat, lng: this.lastWaypoint.lng },
-        { lat: newWaypoint.lat, lng: newWaypoint.lng }
+  async startGame() {
+    const alert = await this.alertController.create({
+      header: 'Start Game',
+      message: 'Enter the number of waypoints for this game session',
+      inputs: [
+        {
+          name: 'waypointCount',
+          type: 'number',
+          placeholder: 'e.g., 5'
+        }
       ],
-      strokeColor: '#FF0000',
-      strokeWeight: 5,
-      clickable: false,
-    }]);
+      buttons: [
+        {
+          text: 'Start',
+          handler: async (data) => {
+            this.waypointCount = +data.waypointCount || this.waypointCount;
+            this.gameStarted = true;
+            this.incorrectAttempts = 0;
 
-    // Store the polyline ID(s) so we can clear them later
-    this.polylines.push(...polylineIds);
+            // Remove existing player marker if it exists
+            if (this.userMarkerId) {
+              await this.map.removeMarker(this.userMarkerId);
+            }
 
-    // Update the last waypoint
-    this.lastWaypoint = newWaypoint;
+            navigator.geolocation.getCurrentPosition(async (position) => {
+              const userLat = position.coords.latitude;
+              const userLng = position.coords.longitude;
+
+              await this.map.setCamera({
+                coordinate: { lat: userLat, lng: userLng },
+                zoom: 15,
+              });
+
+              this.userMarkerId = await this.map.addMarker({
+                coordinate: { lat: userLat, lng: userLng },
+                title: 'Your Location',
+                iconUrl: 'https://maps.google.com/mapfiles/kml/shapes/man.png',
+                draggable: true,
+              });
+
+              this.map.setOnMarkerDragListener(async (event) => {
+                if (event.markerId === this.userMarkerId) {
+                  this.checkProximityToWaypoint(event.latitude, event.longitude);
+                }
+              });
+
+              await this.loadWaypoints(userLat, userLng);
+            });
+          }
+        }
+      ]
+    });
+    await alert.present();
   }
 
-  async clearWaypoints() {
-    // Clear all waypoint markers and polylines
-    if (this.polylines.length > 0) {
-      await this.map.removePolylines(this.polylines); // Remove all polylines
+  async loadWaypoints(latitude: number, longitude: number) {
+    this.waypoints = await this.http.get<Point[]>(
+      `http://localhost:5211/api/Point?latitude=${latitude}&longitude=${longitude}&count=${this.waypointCount}`
+    ).toPromise() || [];
+
+    for (const waypoint of this.waypoints) {
+      const markerId = await this.map.addMarker({
+        coordinate: { lat: waypoint.latitude, lng: waypoint.longitude },
+        title: `Waypoint`,
+      });
+      waypoint.markerId = markerId;
     }
-    this.polylines = [];
+  }
+
+  checkProximityToWaypoint(userLat: number, userLng: number) {
+    if (this.questionActive) return;
+
+    for (const waypoint of this.waypoints) {
+      const distance = this.calculateDistance(userLat, userLng, waypoint.latitude, waypoint.longitude);
+      if (distance < 0.01) {
+        this.questionActive = true;
+        this.presentQuestion(waypoint);
+        break;
+      }
+    }
+  }
+
+  calculateDistance(lat1: number, lng1: number, lat2: number, lng2: number) {
+    const p = Math.PI / 180;
+    const a = 0.5 - Math.cos((lat2 - lat1) * p) / 2 +
+              Math.cos(lat1 * p) * Math.cos(lat2 * p) *
+              (1 - Math.cos((lng2 - lng1) * p)) / 2;
+    return 12742 * Math.asin(Math.sqrt(a));
+  }
+
+  async presentQuestion(waypoint: Point) {
+    const question = waypoint.question;
+    const alert = await this.alertController.create({
+      header: question.text,
+      message: `You have ${3 - this.incorrectAttempts} attempts left.`,
+      backdropDismiss: false,
+      buttons: question.answers.map((answer: string, index: number) => ({
+        text: answer,
+        handler: () => this.checkAnswer(index === question.correctIndex, waypoint, alert)
+      }))
+    });
+    await alert.present();
+  }
+
+  async checkAnswer(isCorrect: boolean, waypoint: Point, alert: HTMLIonAlertElement) {
+    if (isCorrect) {
+      this.questionActive = false;
+      if (waypoint.markerId) {
+        await this.map.removeMarker(waypoint.markerId);
+      }
+      this.waypoints = this.waypoints.filter(wp => wp !== waypoint);
+
+      const correctAlert = await this.alertController.create({
+        header: 'Correct!',
+        message: 'You answered correctly.',
+        buttons: [{ text: 'OK' }]
+      });
+      await correctAlert.present();
+
+      alert.dismiss(); // Close question alert on correct answer
+
+      if (this.waypoints.length === 0) {
+        this.gameStarted = false;
+
+        const congratsAlert = await this.alertController.create({
+          header: 'Congratulations!',
+          message: 'You have cleared all waypoints.',
+          buttons: [
+            {
+              text: 'Play Again',
+              handler: () => {
+                this.resetGame();
+                this.startGame(); // Restart game on successful completion
+              }
+            }
+          ]
+        });
+        await congratsAlert.present();
+      }
+
+      return true;
+    } else {
+      this.incorrectAttempts++;
+
+      if (this.incorrectAttempts >= 3) {
+        alert.dismiss();
+
+        const gameOverAlert = await this.alertController.create({
+          header: 'Game Over',
+          message: 'You answered incorrectly three times.',
+          buttons: [
+            {
+              text: 'Restart Game',
+              handler: () => {
+                this.resetGame();
+                this.startGame();
+              }
+            },
+            {
+              text: 'OK',
+              handler: () => this.resetGame()
+            }
+          ]
+        });
+        await gameOverAlert.present();
+        return true;
+      } else {
+        alert.message = `Incorrect. You have ${3 - this.incorrectAttempts} attempts left.`;
+        return false;
+      }
+    }
+  }
+
+  async resetGame() {
+    this.gameStarted = false;
+    this.incorrectAttempts = 0;
+    this.questionActive = false;
+
+    // Clear existing waypoints and player marker
+    if (this.userMarkerId) {
+      await this.map.removeMarker(this.userMarkerId);
+      this.userMarkerId = null;
+    }
+    this.waypoints.forEach(async (wp) => {
+      if (wp.markerId) await this.map.removeMarker(wp.markerId);
+    });
     this.waypoints = [];
-    this.lastWaypoint = null; // Reset to user position for the next load
   }
 }
