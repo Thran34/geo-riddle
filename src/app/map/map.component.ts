@@ -55,6 +55,7 @@ export class MapComponent implements AfterViewInit, OnDestroy {
   waypointCount = 5;
   incorrectAttempts = 0;
   questionActive = false;
+  realTimeMode = false; 
 
   constructor(
     private alertController: AlertController,
@@ -72,7 +73,7 @@ export class MapComponent implements AfterViewInit, OnDestroy {
   }
 
   async createMap() {
-    const apiKey = 'YOUR_API_KEY_HERE';
+    const apiKey = 'AIzaSyB2N3TfsybLCoYEi8m17tr6qLbCeUUsBmI';
 
     this.map = await GoogleMap.create({
       id: 'my-map',
@@ -86,9 +87,9 @@ export class MapComponent implements AfterViewInit, OnDestroy {
   }
 
   async startGame() {
-    const alert = await this.alertController.create({
-      header: 'Start Game',
-      message: 'Enter the number of waypoints for this game session',
+    const waypointAlert = await this.alertController.create({
+      header: 'Number of Waypoints',
+      message: 'Enter the number of waypoints for this game session.',
       inputs: [
         {
           name: 'waypointCount',
@@ -98,53 +99,148 @@ export class MapComponent implements AfterViewInit, OnDestroy {
       ],
       buttons: [
         {
+          text: 'Next',
+          handler: async (data) => {
+            const waypointCount = parseInt(data.waypointCount, 10);
+            if (isNaN(waypointCount) || waypointCount <= 0) {
+              const errorAlert = await this.alertController.create({
+                header: 'Error',
+                message: 'Please enter a valid number of waypoints.',
+                buttons: [{ text: 'OK' }]
+              });
+              await errorAlert.present();
+              return false;
+            }
+  
+            this.waypointCount = waypointCount;
+            this.showModeSelection(); 
+            return true;
+          }
+        }
+      ]
+    });
+    await waypointAlert.present();
+  }
+
+  async showModeSelection() {
+    const modeAlert = await this.alertController.create({
+      header: 'Select Mode',
+      message: 'Choose the game mode.',
+      inputs: [
+        {
+          name: 'mode',
+          type: 'radio',
+          label: 'Manual',
+          value: 'manual',
+          checked: true
+        },
+        {
+          name: 'mode',
+          type: 'radio',
+          label: 'Real-Time',
+          value: 'real-time'
+        }
+      ],
+      buttons: [
+        {
           text: 'Start',
           handler: async (data) => {
-            this.waypointCount = +data.waypointCount || this.waypointCount;
+            this.realTimeMode = data === 'real-time';
             this.gameStarted = true;
             this.incorrectAttempts = 0;
-
-            // Remove existing player marker if it exists
+  
             if (this.userMarkerId) {
               await this.map.removeMarker(this.userMarkerId);
             }
-
+  
             navigator.geolocation.getCurrentPosition(async (position) => {
               const userLat = position.coords.latitude;
               const userLng = position.coords.longitude;
-
+  
               await this.map.setCamera({
                 coordinate: { lat: userLat, lng: userLng },
                 zoom: 15,
               });
-
+  
               this.userMarkerId = await this.map.addMarker({
                 coordinate: { lat: userLat, lng: userLng },
                 title: 'Your Location',
-                iconUrl: 'https://maps.google.com/mapfiles/kml/shapes/man.png',
-                draggable: true,
+                iconUrl: 'https://maps.google.com/mapfiles/dir_0.png',
+                draggable: !this.realTimeMode,
               });
-
-              this.map.setOnMarkerDragListener(async (event) => {
-                if (event.markerId === this.userMarkerId) {
-                  this.checkProximityToWaypoint(event.latitude, event.longitude);
-                }
-              });
-
+  
+              if (this.realTimeMode) {
+                this.trackRealTimeLocation();
+              } else {
+                this.map.setOnMarkerDragListener(async (event) => {
+                  if (event.markerId === this.userMarkerId) {
+                    this.checkProximityToWaypoint(event.latitude, event.longitude);
+                  }
+                });
+              }
+  
               await this.loadWaypoints(userLat, userLng);
             });
           }
         }
       ]
     });
-    await alert.present();
+    await modeAlert.present();
   }
+  
+  
+  trackRealTimeLocation() {
+    navigator.geolocation.watchPosition(async (position) => {
+      const { latitude, longitude } = position.coords;
+  
+      await this.map.setCamera({
+        coordinate: { lat: latitude, lng: longitude },
+        zoom: 15
+      });
+
+      if (this.userMarkerId) {
+        await this.map.removeMarker(this.userMarkerId);
+      }
+
+      this.userMarkerId = await this.map.addMarker({
+        coordinate: { lat: latitude, lng: longitude },
+        title: 'Your Location',
+        iconUrl: 'https://maps.google.com/mapfiles/dir_0.png',
+        draggable: false
+      });
+  
+      this.checkProximityToWaypoint(latitude, longitude);
+    });
+  }
+  
 
   async loadWaypoints(latitude: number, longitude: number) {
+    // Commenting out the API call
+    /*
     this.waypoints = await this.http.get<Point[]>(
       `http://localhost:5211/api/Point?latitude=${latitude}&longitude=${longitude}&count=${this.waypointCount}`
     ).toPromise() || [];
-
+    */
+  
+    // Generate random waypoints within a 1 km radius
+    const radiusInMeters = 1000; // 1 km radius
+    const randomWaypoints: Point[] = [];
+  
+    for (let i = 0; i < this.waypointCount; i++) {
+      const { lat, lng } = this.getRandomLocationWithinRadius(latitude, longitude, radiusInMeters);
+      randomWaypoints.push({
+        latitude: lat,
+        longitude: lng,
+        question: {
+          text: 'What is 2 + 2?',
+          answers: ['3', '4', '5'],
+          correctIndex: 1
+        }
+      });
+    }
+  
+    this.waypoints = randomWaypoints;
+  
     for (const waypoint of this.waypoints) {
       const markerId = await this.map.addMarker({
         coordinate: { lat: waypoint.latitude, lng: waypoint.longitude },
@@ -153,6 +249,18 @@ export class MapComponent implements AfterViewInit, OnDestroy {
       waypoint.markerId = markerId;
     }
   }
+  
+  getRandomLocationWithinRadius(latitude: number, longitude: number, radiusInMeters: number) {
+    const radiusInDegrees = radiusInMeters / 111300; 
+    const u = Math.random();
+    const v = Math.random();
+    const w = radiusInDegrees * Math.sqrt(u);
+    const t = 2 * Math.PI * v;
+    const deltaLat = w * Math.cos(t);
+    const deltaLng = w * Math.sin(t) / Math.cos(latitude * Math.PI / 180);
+    return { lat: latitude + deltaLat, lng: longitude + deltaLng };
+  }
+  
 
   checkProximityToWaypoint(userLat: number, userLng: number) {
     if (this.questionActive) return;
@@ -204,7 +312,7 @@ export class MapComponent implements AfterViewInit, OnDestroy {
       });
       await correctAlert.present();
 
-      alert.dismiss(); // Close question alert on correct answer
+      alert.dismiss();
 
       if (this.waypoints.length === 0) {
         this.gameStarted = false;
@@ -217,7 +325,7 @@ export class MapComponent implements AfterViewInit, OnDestroy {
               text: 'Play Again',
               handler: () => {
                 this.resetGame();
-                this.startGame(); // Restart game on successful completion
+                this.startGame();
               }
             }
           ]
@@ -263,7 +371,6 @@ export class MapComponent implements AfterViewInit, OnDestroy {
     this.incorrectAttempts = 0;
     this.questionActive = false;
 
-    // Clear existing waypoints and player marker
     if (this.userMarkerId) {
       await this.map.removeMarker(this.userMarkerId);
       this.userMarkerId = null;
